@@ -18,6 +18,12 @@ from loguru import logger
 os.environ["SUPABASE_URL"] = "https://wvplmbsfxsqfxupeucsd.supabase.co"
 os.environ["SUPABASE_KEY"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind2cGxtYnNmeHNxZnh1cGV1Y3NkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODI4NTk4NSwiZXhwIjoyMDYzODYxOTg1fQ.4HE3NrXVeMSCuzsTdwR9bgSA9UuSuD_tFPbwCmbhF2w"
 
+# Garantir que a ENCRYPTION_KEY esteja definida
+if "ENCRYPTION_KEY" not in os.environ:
+    # Usar a mesma chave fixa definida em fix_encryption_env.py
+    os.environ["ENCRYPTION_KEY"] = "dGVzdGtleTEyMzQ1dGVzdGtleTEyMzQ1dGVzdGtleTEyMzQ1"
+    logger.info(f"ENCRYPTION_KEY definida no ambiente: {os.environ['ENCRYPTION_KEY']}")
+
 # Adicionar diretório raiz ao path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,6 +34,39 @@ from app.utils.crypto import encrypt_api_key, test_encryption
 from app.llm.providers import get_llm_provider
 from app.memory.memory import get_memory_manager
 from app.knowledge.knowledge_base import get_knowledge_base
+
+# ID do usuário de teste para uso nos testes
+TEST_USER_ID = "5e033ee2-5552-4010-9cec-d8e428099e14"
+
+def ensure_test_user_exists():
+    """Garante que o usuário de teste exista na tabela users."""
+    logger.info(f"Verificando/criando usuário de teste: {TEST_USER_ID}")
+    
+    try:
+        supabase = get_supabase_client()
+        
+        # Verificar se o usuário já existe
+        response = supabase.table("users").select("id").eq("id", TEST_USER_ID).execute()
+        
+        if response.data and len(response.data) > 0:
+            logger.info("Usuário de teste já existe")
+            return True
+        
+        # Criar usuário de teste se não existir
+        user_data = {
+            "id": TEST_USER_ID,
+            "email": "test@renum.ai",
+            "name": "Test User",
+            "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        response = supabase.table("users").insert(user_data).execute()
+        
+        logger.info(f"Usuário de teste criado: {response}")
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao garantir usuário de teste: {str(e)}")
+        return False
 
 def test_supabase_connection():
     """Testa a conexão com o Supabase."""
@@ -48,14 +87,28 @@ def test_encryption():
     logger.info("Testando funcionalidade de criptografia...")
     
     try:
-        result = test_encryption()
+        # Verificar se a ENCRYPTION_KEY está definida
+        encryption_key = os.environ.get("ENCRYPTION_KEY")
+        logger.info(f"ENCRYPTION_KEY está definida: {encryption_key is not None}")
         
-        if result:
+        # Testar diretamente a criptografia e descriptografia
+        test_value = "test-api-key-12345"
+        
+        # Importar novamente para garantir que está usando a chave correta
+        from app.utils.crypto import encrypt_api_key, decrypt_api_key
+        
+        encrypted = encrypt_api_key(test_value)
+        logger.info(f"Valor criptografado: {encrypted}")
+        
+        decrypted = decrypt_api_key(encrypted)
+        logger.info(f"Valor descriptografado: {decrypted}")
+        
+        if decrypted == test_value:
             logger.info("Teste de criptografia bem-sucedido")
+            return True
         else:
-            logger.error("Teste de criptografia falhou")
-        
-        return result
+            logger.error(f"Teste de criptografia falhou: valores não correspondem. Original: {test_value}, Descriptografado: {decrypted}")
+            return False
     except Exception as e:
         logger.error(f"Erro ao testar criptografia: {str(e)}")
         return False
@@ -164,7 +217,7 @@ async def test_agent_factory():
             "name": "Test Agent",
             "description": "Agent for end-to-end testing",
             "status": "active",
-            "created_by": "00000000-0000-0000-0000-000000000000",  # ID de usuário fictício
+            "created_by": TEST_USER_ID,  # Usar ID do usuário de teste
             "system_prompt": "You are a helpful assistant for testing purposes.",
             "llm_config": {
                 "provider": "dummy",
@@ -187,12 +240,13 @@ async def test_agent_factory():
         logger.info(f"Criando agente de teste no Supabase: {agent_id}")
         response = supabase.table("agents").insert(agent_config).execute()
         
-        # Criar ferramenta de teste no Supabase
+        # Criar ferramenta de teste no Supabase com nome único
         tool_id = str(uuid.uuid4())
+        unique_tool_name = f"echo_{str(uuid.uuid4())[:8]}"  # Nome único para evitar duplicidade
         
         tool_config = {
             "id": tool_id,
-            "name": "echo",
+            "name": unique_tool_name,  # Nome único
             "description": "Echoes the input text",
             "backend_tool_class_name": "EchoTool",
             "parameters_schema": {
@@ -209,7 +263,7 @@ async def test_agent_factory():
             "credential_provider": None
         }
         
-        logger.info(f"Criando ferramenta de teste no Supabase: {tool_id}")
+        logger.info(f"Criando ferramenta de teste no Supabase: {tool_id} com nome único: {unique_tool_name}")
         response = supabase.table("tools").insert(tool_config).execute()
         
         # Associar ferramenta ao agente
@@ -262,6 +316,9 @@ async def run_all_tests():
     """Executa todos os testes end-to-end."""
     logger.info("Iniciando testes end-to-end do Agent Builder...")
     
+    # Garantir que o usuário de teste exista
+    ensure_test_user_exists()
+    
     tests = [
         ("Conexão com o Supabase", test_supabase_connection),
         ("Funcionalidade de criptografia", test_encryption),
@@ -309,6 +366,7 @@ if __name__ == "__main__":
     # Verificar se as variáveis de ambiente estão configuradas
     logger.info(f"SUPABASE_URL configurada: {os.environ.get('SUPABASE_URL') is not None}")
     logger.info(f"SUPABASE_KEY configurada: {os.environ.get('SUPABASE_KEY') is not None}")
+    logger.info(f"ENCRYPTION_KEY configurada: {os.environ.get('ENCRYPTION_KEY') is not None}")
     
     # Configurar logger
     logger.remove()
